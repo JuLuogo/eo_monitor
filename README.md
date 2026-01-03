@@ -38,6 +38,23 @@
    - `SECRET_KEY`: 您的腾讯云 SecretKey
    - `SITE_NAME`: (可选) 自定义大屏标题，默认为 "AcoFork 的 EdgeOne 监控大屏"
    - `SITE_ICON`: (可选) 自定义网页图标，默认为 "https://q2.qlogo.cn/headimg_dl?dst_uin=2726730791&spec=0"
+
+#### 多账号配置 (可选)
+如果需要同时管理多个 EdgeOne 账号（如国内站和海外站），请添加以下环境变量：
+- **账号 1**:
+  - `EO_ACCOUNT_1_SECRET_ID`: 账号1 SecretId
+  - `EO_ACCOUNT_1_SECRET_KEY`: 账号1 SecretKey
+  - `EO_ACCOUNT_1_NAME`: (可选) 账号1 显示名称，例如 "国内站"
+  - `EO_ACCOUNT_1_PAGES_NAME`: (可选) 账号1 Pages 站点显示名称，例如 "国内Pages"
+- **账号 2**:
+  - `EO_ACCOUNT_2_SECRET_ID`: 账号2 SecretId
+  - `EO_ACCOUNT_2_SECRET_KEY`: 账号2 SecretKey
+  - `EO_ACCOUNT_2_NAME`: (可选) 账号2 显示名称，例如 "海外站"
+  - `EO_ACCOUNT_2_PAGES_NAME`: (可选) 账号2 Pages 站点显示名称，例如 "Global Pages"
+- ...以此类推
+
+配置多账号后，大屏左上角将出现账号切换选项，并提供 **“总览 (所有账号)”** 功能，可聚合展示所有账号的流量和数据。
+
 5. 部署项目。
 
 ### 方式二：本地运行 / Node.js 环境
@@ -55,12 +72,13 @@
    ```
 
 3. 配置密钥：
-   - **方法 A (环境变量)**：创建 `.env` 文件或直接导出环境变量 `SECRET_ID` 和 `SECRET_KEY`。
+   - **方法 A (环境变量 - 推荐)**：创建 `.env` 文件，内容参考上方 Pages 部署的环境变量说明（支持多账号）。
    - **方法 B (文件配置)**：在项目根目录创建 `key.txt` 文件，内容格式如下（注意使用中文冒号）：
      ```text
      SecretId：您的SecretId
      SecretKey：您的SecretKey
      ```
+     *注意：`key.txt` 仅支持单账号配置。*
 
 4. 启动服务：
    ```bash

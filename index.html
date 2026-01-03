@@ -1409,7 +1409,8 @@
 
                         let text = zone.ZoneName;
                         if (text === 'default-pages-zone') {
-                            text += ' (Pages站点)';
+                            const pagesName = zone._pagesName || 'Pages站点';
+                            text += ` (${pagesName})`;
                         }
                         // Optionally show account name in dropdown if overview mode
                         // if (zone._accountId) { text += ` [${zone._accountId}]`; } 

@@ -34,6 +34,7 @@ function getAccounts() {
             id: process.env[`EO_ACCOUNT_${i}_ID`] || `env_account_${i}`,
             // Support NAME or ALIAS for display name
             name: process.env[`EO_ACCOUNT_${i}_NAME`] || process.env[`EO_ACCOUNT_${i}_ALIAS`] || `Account ${i}`,
+            pagesName: process.env[`EO_ACCOUNT_${i}_PAGES_NAME`] || 'Pages站点',
             secretId: process.env[`EO_ACCOUNT_${i}_SECRET_ID`],
             secretKey: process.env[`EO_ACCOUNT_${i}_SECRET_KEY`]
         });
@@ -62,6 +63,7 @@ function getAccounts() {
             accounts.push({
                 id: 'default',
                 name: process.env.DEFAULT_ACCOUNT_NAME || 'Default Account',
+                pagesName: process.env.DEFAULT_PAGES_NAME || 'Pages站点',
                 secretId: process.env.SECRET_ID,
                 secretKey: process.env.SECRET_KEY
             });
@@ -248,7 +250,11 @@ app.get('/zones', async (req, res) => {
                     const data = await client.DescribeZones({});
                     if (data && data.Zones) {
                         // Tag zones with accountId
-                        return data.Zones.map(z => ({ ...z, _accountId: acc.id }));
+                        return data.Zones.map(z => ({ 
+                            ...z, 
+                            _accountId: acc.id,
+                            _pagesName: acc.pagesName 
+                        }));
                     }
                 } catch (err) {
                     console.error(`Error fetching zones for account ${acc.id}:`, err);
@@ -262,10 +268,19 @@ app.get('/zones', async (req, res) => {
 
         } else {
             // Single account case
+            // Get Pages Name for this account
+            const accounts = getAccounts();
+            const targetAccount = accounts.find(a => a.id === req.query.accountId || a.name === req.query.accountId) || accounts[0];
+            const pagesName = targetAccount ? (targetAccount.pagesName || 'Pages站点') : 'Pages站点';
+
             results.forEach(data => {
                 if (data && data.Zones) {
                     // Tag with the requested accountId
-                    const tagged = data.Zones.map(z => ({ ...z, _accountId: req.query.accountId }));
+                    const tagged = data.Zones.map(z => ({ 
+                        ...z, 
+                        _accountId: req.query.accountId,
+                        _pagesName: pagesName
+                    }));
                     mergedZones = mergedZones.concat(tagged);
                     totalCount += data.TotalCount || 0;
                 }
