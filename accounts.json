@@ -1,0 +1,14 @@
+[
+    {
+        "id": "account1",
+        "name": "主账号",
+        "secretId": "AKIDExample1",
+        "secretKey": "SecretKeyExample1"
+    },
+    {
+        "id": "account2",
+        "name": "测试账号",
+        "secretId": "AKIDExample2",
+        "secretKey": "SecretKeyExample2"
+    }
+]

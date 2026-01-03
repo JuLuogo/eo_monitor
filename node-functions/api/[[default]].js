@@ -11,17 +11,73 @@ import { CommonClient } from "tencentcloud-sdk-nodejs-common";
 
 const app = express();
 
-// Function to read keys
-function getKeys() {
-    // 1. Try Environment Variables first
-    let secretId = process.env.SECRET_ID;
-    let secretKey = process.env.SECRET_KEY;
+// Function to read accounts
+function getAccounts() {
+    let accounts = [];
 
-    if (secretId && secretKey) {
-        return { secretId, secretKey };
+    // 1. Try Environment Variables for Multi-Account (EO_ACCOUNT_1_...)
+    let i = 1;
+    while (process.env[`EO_ACCOUNT_${i}_SECRET_ID`] && process.env[`EO_ACCOUNT_${i}_SECRET_KEY`]) {
+        accounts.push({
+            id: process.env[`EO_ACCOUNT_${i}_ID`] || `env_account_${i}`,
+            name: process.env[`EO_ACCOUNT_${i}_NAME`] || `Environment Account ${i}`,
+            secretId: process.env[`EO_ACCOUNT_${i}_SECRET_ID`],
+            secretKey: process.env[`EO_ACCOUNT_${i}_SECRET_KEY`]
+        });
+        i++;
     }
 
-    // 2. Try key.txt if Env Vars are missing
+    // 2. Try accounts.json
+    const accountsPath = path.resolve(process.cwd(), 'accounts.json');
+    if (fs.existsSync(accountsPath)) {
+        try {
+            const content = fs.readFileSync(accountsPath, 'utf-8');
+            const fileAccounts = JSON.parse(content);
+            if (Array.isArray(fileAccounts)) {
+                // Merge strategies: Append file accounts to env accounts
+                // Check for duplicates if needed, but simple concat is fine for now
+                accounts = accounts.concat(fileAccounts);
+            }
+        } catch (err) {
+            console.error("Error reading accounts.json:", err);
+        }
+    }
+
+    // 3. Fallback: If no accounts found, check for single env vars (Legacy support)
+    if (accounts.length === 0) {
+        if (process.env.SECRET_ID && process.env.SECRET_KEY) {
+            accounts.push({
+                id: 'default',
+                name: 'Default Account',
+                secretId: process.env.SECRET_ID,
+                secretKey: process.env.SECRET_KEY
+            });
+        }
+    }
+
+    return accounts;
+}
+
+// Function to read keys
+function getKeys(accountId) {
+    // 0. Try accounts list (Source: Env Vars or accounts.json)
+    const accounts = getAccounts();
+    
+    if (accountId) {
+        // Match by id or name
+        const account = accounts.find(a => (a.id && a.id === accountId) || a.name === accountId);
+        if (account) {
+            return { secretId: account.secretId, secretKey: account.secretKey };
+        }
+    } else if (accounts.length > 0) {
+        // Default to first account if no accountId provided
+        return { secretId: accounts[0].secretId, secretKey: accounts[0].secretKey };
+    }
+
+    // 1. Fallback to key.txt if no accounts found
+    let secretId = '';
+    let secretKey = '';
+
     try {
         // const keyPath = path.resolve(__dirname, '../../key.txt');
         const keyPath = path.resolve(process.cwd(), 'key.txt');
@@ -96,6 +152,11 @@ const FUNCTION_METRICS = [
     'function_cpuCostTime'
 ];
 
+app.get('/accounts', (req, res) => {
+    const accounts = getAccounts().map(a => ({ id: a.id || a.name, name: a.name }));
+    res.json(accounts);
+});
+
 app.get('/config', (req, res) => {
     res.json({
         siteName: process.env.SITE_NAME || 'AcoFork 的 EdgeOne 监控大屏',
@@ -105,7 +166,7 @@ app.get('/config', (req, res) => {
 
 app.get('/zones', async (req, res) => {
     try {
-        const { secretId, secretKey } = getKeys();
+        const { secretId, secretKey } = getKeys(req.query.accountId);
         
         if (!secretId || !secretKey) {
             return res.status(500).json({ error: "Missing credentials" });
@@ -139,7 +200,7 @@ app.get('/zones', async (req, res) => {
 
 app.get('/pages/build-count', async (req, res) => {
     try {
-        const { secretId, secretKey } = getKeys();
+        const { secretId, secretKey } = getKeys(req.query.accountId);
         
         if (!secretId || !secretKey) {
             return res.status(500).json({ error: "Missing credentials" });
@@ -223,7 +284,7 @@ app.get('/pages/build-count', async (req, res) => {
 
 app.get('/pages/cloud-function-requests', async (req, res) => {
     try {
-        const { secretId, secretKey } = getKeys();
+        const { secretId, secretKey } = getKeys(req.query.accountId);
         
         if (!secretId || !secretKey) {
             return res.status(500).json({ error: "Missing credentials" });
@@ -316,7 +377,7 @@ app.get('/pages/cloud-function-requests', async (req, res) => {
 
 app.get('/pages/cloud-function-monthly-stats', async (req, res) => {
     try {
-        const { secretId, secretKey } = getKeys();
+        const { secretId, secretKey } = getKeys(req.query.accountId);
         
         if (!secretId || !secretKey) {
             return res.status(500).json({ error: "Missing credentials" });
@@ -404,7 +465,7 @@ app.get('/pages/cloud-function-monthly-stats', async (req, res) => {
 
 app.get('/traffic', async (req, res) => {
     try {
-        const { secretId, secretKey } = getKeys();
+        const { secretId, secretKey } = getKeys(req.query.accountId);
         
         if (!secretId || !secretKey) {
             return res.status(500).json({ error: "Missing credentials" });
