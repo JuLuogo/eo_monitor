@@ -15,19 +15,32 @@ const app = express();
 function getAccounts() {
     let accounts = [];
 
-    // 1. Try Environment Variables for Multi-Account (EO_ACCOUNT_1_...)
+    // 1. Try EO_ACCOUNTS Environment Variable (JSON String)
+    if (process.env.EO_ACCOUNTS) {
+        try {
+            const parsed = JSON.parse(process.env.EO_ACCOUNTS);
+            if (Array.isArray(parsed)) {
+                accounts = accounts.concat(parsed);
+            }
+        } catch (e) {
+            console.error("Error parsing EO_ACCOUNTS env var:", e);
+        }
+    }
+
+    // 2. Try Environment Variables for Multi-Account (EO_ACCOUNT_1_...)
     let i = 1;
     while (process.env[`EO_ACCOUNT_${i}_SECRET_ID`] && process.env[`EO_ACCOUNT_${i}_SECRET_KEY`]) {
         accounts.push({
             id: process.env[`EO_ACCOUNT_${i}_ID`] || `env_account_${i}`,
-            name: process.env[`EO_ACCOUNT_${i}_NAME`] || `Environment Account ${i}`,
+            // Support NAME or ALIAS for display name
+            name: process.env[`EO_ACCOUNT_${i}_NAME`] || process.env[`EO_ACCOUNT_${i}_ALIAS`] || `Account ${i}`,
             secretId: process.env[`EO_ACCOUNT_${i}_SECRET_ID`],
             secretKey: process.env[`EO_ACCOUNT_${i}_SECRET_KEY`]
         });
         i++;
     }
 
-    // 2. Try accounts.json
+    // 3. Try accounts.json
     try {
         const accountsPath = path.resolve(process.cwd(), 'accounts.json');
         if (fs.existsSync(accountsPath)) {
@@ -43,12 +56,12 @@ function getAccounts() {
         console.warn("Note: accounts.json not found or not accessible, skipping.");
     }
 
-    // 3. Fallback: If no accounts found, check for single env vars (Legacy support)
+    // 4. Fallback: If no accounts found, check for single env vars (Legacy support)
     if (accounts.length === 0) {
         if (process.env.SECRET_ID && process.env.SECRET_KEY) {
             accounts.push({
                 id: 'default',
-                name: 'Default Account',
+                name: process.env.DEFAULT_ACCOUNT_NAME || 'Default Account',
                 secretId: process.env.SECRET_ID,
                 secretKey: process.env.SECRET_KEY
             });
