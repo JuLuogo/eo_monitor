@@ -295,8 +295,8 @@ app.get('/pages/build-count', async (req, res) => {
             const client = new CommonClient("teo.tencentcloudapi.com", "2022-09-01", commonClientConfig);
             let targetZoneId = req.query.zoneId;
 
-            // 1. Auto-discover Zone if needed
-            if (!targetZoneId) {
+            // 1. Auto-discover Zone if needed (including 'all' mode where zoneId might be '*' or undefined)
+            if (!targetZoneId || targetZoneId === '*') {
                 try {
                     const TeoClient = teo.v20220901.Client;
                     const teoClient = new TeoClient({
@@ -314,7 +314,7 @@ app.get('/pages/build-count', async (req, res) => {
                 } catch (zErr) { console.error("Error fetching zones for Pages:", zErr); }
             }
 
-            if (!targetZoneId) return null;
+            if (!targetZoneId || targetZoneId === '*') return null;
 
             const params = { "Interface": "pages:DescribePagesDeploymentUsage", "Payload": "{}", "ZoneId": targetZoneId };
             const data = await client.request("DescribePagesResources", params);
@@ -357,7 +357,7 @@ app.get('/pages/cloud-function-requests', async (req, res) => {
             const { startTime, endTime } = req.query;
 
             // 1. Auto-discover Zone
-            if (!targetZoneId) {
+            if (!targetZoneId || targetZoneId === '*') {
                 try {
                     const TeoClient = teo.v20220901.Client;
                     const teoClient = new TeoClient({
@@ -375,7 +375,7 @@ app.get('/pages/cloud-function-requests', async (req, res) => {
                 } catch (zErr) { console.error("Error fetching zones for Pages:", zErr); }
             }
 
-            if (!targetZoneId) return null;
+            if (!targetZoneId || targetZoneId === '*') return null;
 
             const payload = { ZoneId: targetZoneId, Interval: "hour" };
             if (startTime) payload.StartTime = startTime;
@@ -446,7 +446,7 @@ app.get('/pages/cloud-function-monthly-stats', async (req, res) => {
             const client = new CommonClient("teo.tencentcloudapi.com", "2022-09-01", commonClientConfig);
             let targetZoneId = req.query.zoneId;
 
-            if (!targetZoneId) {
+            if (!targetZoneId || targetZoneId === '*') {
                 try {
                     const TeoClient = teo.v20220901.Client;
                     const teoClient = new TeoClient({
@@ -463,7 +463,7 @@ app.get('/pages/cloud-function-monthly-stats', async (req, res) => {
                 } catch (zErr) { console.error("Error fetching zones for Pages:", zErr); }
             }
 
-            if (!targetZoneId) return null;
+            if (!targetZoneId || targetZoneId === '*') return null;
 
             const params = { "ZoneId": targetZoneId, "Interface": "pages:DescribeHistoryCloudFunctionStats", "Payload": JSON.stringify({ ZoneId: targetZoneId }) };
             const data = await client.request("DescribePagesResources", params);
