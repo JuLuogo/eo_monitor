@@ -594,13 +594,23 @@ app.get('/traffic', async (req, res) => {
         // Helper to merge Detail arrays (Top Data)
         const mergeDetails = (targetDetails, sourceDetails) => {
             const map = new Map();
-            targetDetails.forEach(d => map.set(d.Name, { ...d }));
+            
+            // Helper to get the key property (API might return Name or Key)
+            const getK = (item) => item.Key || item.Name;
+
+            targetDetails.forEach(d => {
+                const k = getK(d);
+                if (k) map.set(k, { ...d });
+            });
             
             sourceDetails.forEach(d => {
-                if (map.has(d.Name)) {
-                    map.get(d.Name).Value += d.Value;
-                } else {
-                    map.set(d.Name, { ...d });
+                const k = getK(d);
+                if (k) {
+                    if (map.has(k)) {
+                        map.get(k).Value += d.Value;
+                    } else {
+                        map.set(k, { ...d });
+                    }
                 }
             });
             
