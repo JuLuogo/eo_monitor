@@ -28,19 +28,19 @@ function getAccounts() {
     }
 
     // 2. Try accounts.json
-    const accountsPath = path.resolve(process.cwd(), 'accounts.json');
-    if (fs.existsSync(accountsPath)) {
-        try {
+    try {
+        const accountsPath = path.resolve(process.cwd(), 'accounts.json');
+        if (fs.existsSync(accountsPath)) {
             const content = fs.readFileSync(accountsPath, 'utf-8');
             const fileAccounts = JSON.parse(content);
             if (Array.isArray(fileAccounts)) {
                 // Merge strategies: Append file accounts to env accounts
-                // Check for duplicates if needed, but simple concat is fine for now
                 accounts = accounts.concat(fileAccounts);
             }
-        } catch (err) {
-            console.error("Error reading accounts.json:", err);
         }
+    } catch (err) {
+        // Ignore file errors in serverless environment where file might not exist or be accessible
+        console.warn("Note: accounts.json not found or not accessible, skipping.");
     }
 
     // 3. Fallback: If no accounts found, check for single env vars (Legacy support)
