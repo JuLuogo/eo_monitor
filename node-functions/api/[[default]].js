@@ -632,73 +632,16 @@ app.get('/traffic', async (req, res) => {
                 
             } else {
                 // Time Series (General)
-                // Need to handle different structures:
-                // 1. Data[].TypeValue[].Detail (TimingL7Analysis)
-                // 2. TimingDataRecords[].TypeValue[].Detail (TimingL7OriginPull)
-                // 3. Data[].Value (WebProtection - CommonClient) -> needs Result parsing usually? 
-                //    Wait, CommonClient.request returns object with "Result" if it's raw, but here we might get parsed object depending on SDK version?
-                //    Actually, DescribeWebProtectionData returns a structure like { Data: [...] } where Data has MetricName and Value (array of {Timestamp, Value})
+                // Determine strategy based on METRIC TYPE, not just first result structure
                 
-                // Let's implement a generic merger based on what we find in the first result
-                
-                // Strategy: Just loop and sum up everything that looks like a number in the deep structure? 
-                // Too risky. Let's be specific.
-                
-                // Case A: TimingL7AnalysisData (Data -> TypeValue -> Detail)
-                if (first.Data && first.Data[0] && first.Data[0].TypeValue) {
-                     // We need to merge Detail arrays for each MetricName
-                     // But usually we request only 1 metric.
-                     const metricName = first.Data[0].TypeValue[0].MetricName;
-                     
-                     // We will reconstruct the Detail array
+                // Case A: ORIGIN_PULL_METRICS (DescribeTimingL7OriginPullData)
+                // Structure: TimingDataRecords[].TypeValue[].Detail
+                if (ORIGIN_PULL_METRICS.includes(metric)) {
                      const timestampMap = new Map();
                      
                      results.forEach(res => {
-                         if (res.Data && res.Data[0] && res.Data[0].TypeValue) {
-                             const typeVal = res.Data[0].TypeValue.find(t => t.MetricName === metricName);
-                             if (typeVal && typeVal.Detail) {
-                                 typeVal.Detail.forEach(d => {
-                                     if (!timestampMap.has(d.Timestamp)) {
-                                         timestampMap.set(d.Timestamp, { Timestamp: d.Timestamp, Value: 0 });
-                                     }
-                                     timestampMap.get(d.Timestamp).Value += d.Value;
-                                 });
-                             }
-                         }
-                     });
-                     
-                     const mergedDetail = Array.from(timestampMap.values()).sort((a,b) => a.Timestamp - b.Timestamp);
-                     
-                     // Calculate Sum, Max, Avg
-                     let sum = 0, max = 0;
-                     mergedDetail.forEach(d => {
-                         sum += d.Value;
-                         if (d.Value > max) max = d.Value;
-                     });
-                     const avg = mergedDetail.length > 0 ? sum / mergedDetail.length : 0;
-                     
-                     mergedData = {
-                         Data: [{
-                             TypeValue: [{
-                                 MetricName: metricName,
-                                 Detail: mergedDetail,
-                                 Sum: sum,
-                                 Max: max,
-                                 Avg: avg
-                             }]
-                         }],
-                         Interval: interval
-                     };
-                }
-                // Case B: TimingL7OriginPullData (TimingDataRecords -> TypeValue -> Detail)
-                else if (first.TimingDataRecords && first.TimingDataRecords[0] && first.TimingDataRecords[0].TypeValue) {
-                    // Same logic as Case A but different root
-                     const metricName = first.TimingDataRecords[0].TypeValue[0].MetricName;
-                     const timestampMap = new Map();
-                     
-                     results.forEach(res => {
-                         if (res.TimingDataRecords && res.TimingDataRecords[0] && res.TimingDataRecords[0].TypeValue) {
-                             const typeVal = res.TimingDataRecords[0].TypeValue.find(t => t.MetricName === metricName);
+                         if (res && res.TimingDataRecords && res.TimingDataRecords[0] && res.TimingDataRecords[0].TypeValue) {
+                             const typeVal = res.TimingDataRecords[0].TypeValue.find(t => t.MetricName === metric);
                              if (typeVal && typeVal.Detail) {
                                  typeVal.Detail.forEach(d => {
                                      if (!timestampMap.has(d.Timestamp)) {
@@ -713,14 +656,14 @@ app.get('/traffic', async (req, res) => {
                      const mergedDetail = Array.from(timestampMap.values()).sort((a,b) => a.Timestamp - b.Timestamp);
                      
                      let sum = 0, max = 0;
-                     mergedDetail.forEach(d => sum += d.Value); // OriginPull doesn't always return Sum/Max in root, but let's compute
+                     mergedDetail.forEach(d => sum += d.Value); 
                      mergedDetail.forEach(d => { if(d.Value > max) max = d.Value; });
                      const avg = mergedDetail.length > 0 ? sum / mergedDetail.length : 0;
 
                      mergedData = {
                          TimingDataRecords: [{
                              TypeValue: [{
-                                 MetricName: metricName,
+                                 MetricName: metric,
                                  Detail: mergedDetail,
                                  Sum: sum,
                                  Max: max,
@@ -730,19 +673,21 @@ app.get('/traffic', async (req, res) => {
                          Interval: interval
                      };
                 }
-                // Case C: WebProtectionData / FunctionData (Data -> Value (Array of {Timestamp, Value}))
-                // Note: DescribeWebProtectionData returns Data list where each item has MetricName and Value (Array)
-                else if (first.Data && first.Data[0] && first.Data[0].Value) {
-                    // Assuming structure: Data: [ { MetricName: '...', Value: [ {Timestamp, Value}, ... ] } ]
-                    // We need to handle multiple metrics if requested (e.g. function cpu/req)
-                    
+                // Case B: SECURITY_METRICS or FUNCTION_METRICS (DescribeWebProtectionData / FunctionData)
+                // Structure: Data[].Value (Array of {Timestamp, Value})
+                else if (SECURITY_METRICS.includes(metric) || FUNCTION_METRICS.includes(metric)) {
                     let mergedDataList = [];
+                    // We need to know which metric names to expect. 
+                    // For Security, it's usually just [metric]. 
+                    // For Function cpuCostTime, it requests two metrics.
                     
-                    // Initialize mergedDataList with metrics from first result
-                    first.Data.forEach(m => {
+                    let targetMetrics = [metric];
+                    if (metric === 'function_cpuCostTime') targetMetrics = ["function_requestCount", "function_cpuCostTime"];
+                    
+                    targetMetrics.forEach(mName => {
                         mergedDataList.push({
-                            MetricName: m.MetricName,
-                            ValueMap: new Map() // Temp map for summing
+                            MetricName: mName,
+                            ValueMap: new Map()
                         });
                     });
                     
@@ -763,7 +708,6 @@ app.get('/traffic', async (req, res) => {
                         }
                     });
                     
-                    // Finalize structure
                     mergedData = {
                         Data: mergedDataList.map(m => ({
                             MetricName: m.MetricName,
@@ -772,9 +716,46 @@ app.get('/traffic', async (req, res) => {
                         Interval: interval
                     };
                 }
-                // Fallback: just return first
+                // Case C: Standard Traffic/Bandwidth (DescribeTimingL7AnalysisData)
+                // Structure: Data[].TypeValue[].Detail
                 else {
-                    mergedData = first;
+                     const timestampMap = new Map();
+                     
+                     results.forEach(res => {
+                         if (res && res.Data && res.Data[0] && res.Data[0].TypeValue) {
+                             const typeVal = res.Data[0].TypeValue.find(t => t.MetricName === metric);
+                             if (typeVal && typeVal.Detail) {
+                                 typeVal.Detail.forEach(d => {
+                                     if (!timestampMap.has(d.Timestamp)) {
+                                         timestampMap.set(d.Timestamp, { Timestamp: d.Timestamp, Value: 0 });
+                                     }
+                                     timestampMap.get(d.Timestamp).Value += d.Value;
+                                 });
+                             }
+                         }
+                     });
+                     
+                     const mergedDetail = Array.from(timestampMap.values()).sort((a,b) => a.Timestamp - b.Timestamp);
+                     
+                     let sum = 0, max = 0;
+                     mergedDetail.forEach(d => {
+                         sum += d.Value;
+                         if (d.Value > max) max = d.Value;
+                     });
+                     const avg = mergedDetail.length > 0 ? sum / mergedDetail.length : 0;
+                     
+                     mergedData = {
+                         Data: [{
+                             TypeValue: [{
+                                 MetricName: metric,
+                                 Detail: mergedDetail,
+                                 Sum: sum,
+                                 Max: max,
+                                 Avg: avg
+                             }]
+                         }],
+                         Interval: interval
+                     };
                 }
             }
         }
