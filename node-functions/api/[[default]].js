@@ -177,34 +177,59 @@ app.get('/config', (req, res) => {
     });
 });
 
+// Helper to execute a function across all accounts or a specific one
+async function executeOnAccount(accountId, fn) {
+    if (accountId === 'all') {
+        const accounts = getAccounts();
+        if (accounts.length === 0) throw new Error("No accounts configured");
+        
+        // Execute in parallel
+        const results = await Promise.all(accounts.map(async (acc) => {
+            try {
+                return await fn(acc.secretId, acc.secretKey);
+            } catch (err) {
+                console.error(`Error executing on account ${acc.id}:`, err);
+                return null; // Return null on failure
+            }
+        }));
+        
+        return results.filter(r => r !== null);
+    } else {
+        const { secretId, secretKey } = getKeys(accountId);
+        if (!secretId || !secretKey) throw new Error("Missing credentials");
+        const result = await fn(secretId, secretKey);
+        return [result];
+    }
+}
+
 app.get('/zones', async (req, res) => {
     try {
-        const { secretId, secretKey } = getKeys(req.query.accountId);
-        
-        if (!secretId || !secretKey) {
-            return res.status(500).json({ error: "Missing credentials" });
-        }
+        const results = await executeOnAccount(req.query.accountId, async (secretId, secretKey) => {
+            const TeoClient = teo.v20220901.Client;
+            const client = new TeoClient({
+                credential: { secretId, secretKey },
+                region: "ap-guangzhou",
+                profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
+            });
+            return await client.DescribeZones({});
+        });
 
-        const TeoClient = teo.v20220901.Client;
-        const clientConfig = {
-            credential: {
-                secretId: secretId,
-                secretKey: secretKey,
-            },
-            region: "ap-guangzhou",
-            profile: {
-                httpProfile: {
-                    endpoint: "teo.tencentcloudapi.com",
-                },
-            },
-        };
-
-        const client = new TeoClient(clientConfig);
-        const params = {};
+        // Merge zones
+        let mergedZones = [];
+        let totalCount = 0;
         
-        console.log("Calling DescribeZones...");
-        const data = await client.DescribeZones(params);
-        res.json(data);
+        results.forEach(data => {
+            if (data && data.Zones) {
+                mergedZones = mergedZones.concat(data.Zones);
+                totalCount += data.TotalCount || 0;
+            }
+        });
+
+        res.json({
+            TotalCount: totalCount,
+            Zones: mergedZones,
+            RequestId: results[0]?.RequestId || 'merged-request'
+        });
     } catch (err) {
         console.error("Error calling DescribeZones:", err);
         res.status(500).json({ error: err.message });
@@ -213,82 +238,57 @@ app.get('/zones', async (req, res) => {
 
 app.get('/pages/build-count', async (req, res) => {
     try {
-        const { secretId, secretKey } = getKeys(req.query.accountId);
-        
-        if (!secretId || !secretKey) {
-            return res.status(500).json({ error: "Missing credentials" });
-        }
+        const results = await executeOnAccount(req.query.accountId, async (secretId, secretKey) => {
+            const commonClientConfig = {
+                credential: { secretId, secretKey },
+                region: "ap-guangzhou",
+                profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
+            };
 
-        const commonClientConfig = {
-            credential: {
-                secretId: secretId,
-                secretKey: secretKey,
-            },
-            region: "ap-guangzhou",
-            profile: {
-                httpProfile: {
-                    endpoint: "teo.tencentcloudapi.com",
-                },
-            },
-        };
+            const client = new CommonClient("teo.tencentcloudapi.com", "2022-09-01", commonClientConfig);
+            let targetZoneId = req.query.zoneId;
 
-        const client = new CommonClient(
-            "teo.tencentcloudapi.com",
-            "2022-09-01",
-            commonClientConfig
-        );
-
-        // 1. Find ZoneId (Pages usually requires 'default-pages-zone')
-        let targetZoneId = req.query.zoneId;
-
-        if (!targetZoneId) {
-             try {
-                const TeoClient = teo.v20220901.Client;
-                const teoClient = new TeoClient({
-                    credential: { secretId, secretKey },
-                    region: "ap-guangzhou",
-                    profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
-                });
-                
-                const zonesData = await teoClient.DescribeZones({});
-                if (zonesData && zonesData.Zones) {
-                    const pagesZone = zonesData.Zones.find(z => z.ZoneName === 'default-pages-zone');
-                    if (pagesZone) {
-                        targetZoneId = pagesZone.ZoneId;
-                        console.log(`Found default-pages-zone: ${targetZoneId}`);
-                    } else if (zonesData.Zones.length > 0) {
-                        targetZoneId = zonesData.Zones[0].ZoneId;
-                        console.log(`default-pages-zone not found, using first zone: ${targetZoneId}`);
+            // 1. Auto-discover Zone if needed
+            if (!targetZoneId) {
+                try {
+                    const TeoClient = teo.v20220901.Client;
+                    const teoClient = new TeoClient({
+                        credential: { secretId, secretKey },
+                        region: "ap-guangzhou",
+                        profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
+                    });
+                    
+                    const zonesData = await teoClient.DescribeZones({});
+                    if (zonesData && zonesData.Zones) {
+                        const pagesZone = zonesData.Zones.find(z => z.ZoneName === 'default-pages-zone');
+                        if (pagesZone) targetZoneId = pagesZone.ZoneId;
+                        else if (zonesData.Zones.length > 0) targetZoneId = zonesData.Zones[0].ZoneId;
                     }
-                }
-             } catch (zErr) {
-                 console.error("Error fetching zones for Pages:", zErr);
-             }
-        }
-
-        if (!targetZoneId) {
-            return res.status(400).json({ error: "Missing ZoneId and could not auto-discover one." });
-        }
-
-        const params = {
-            "Interface": "pages:DescribePagesDeploymentUsage",
-            "Payload": "{}",
-            "ZoneId": targetZoneId
-        };
-        
-        console.log("Calling DescribePagesResources with params:", JSON.stringify(params));
-        const data = await client.request("DescribePagesResources", params);
-        
-        // Parse Result string if present
-        if (data && data.Result) {
-            try {
-                data.parsedResult = JSON.parse(data.Result);
-            } catch (e) {
-                console.error("Error parsing Result JSON:", e);
+                } catch (zErr) { console.error("Error fetching zones for Pages:", zErr); }
             }
-        }
+
+            if (!targetZoneId) return null;
+
+            const params = { "Interface": "pages:DescribePagesDeploymentUsage", "Payload": "{}", "ZoneId": targetZoneId };
+            const data = await client.request("DescribePagesResources", params);
+            if (data && data.Result) {
+                try { data.parsedResult = JSON.parse(data.Result); } catch (e) {}
+            }
+            return data;
+        });
+
+        // Merge Build Counts
+        let totalDaily = 0;
+        let totalMonth = 0;
         
-        res.json(data);
+        results.forEach(res => {
+            if (res && res.parsedResult) {
+                totalDaily += (res.parsedResult.dplDailyCount || 0);
+                totalMonth += (res.parsedResult.dplMonthCount || 0);
+            }
+        });
+
+        res.json({ parsedResult: { dplDailyCount: totalDaily, dplMonthCount: totalMonth } });
     } catch (err) {
         console.error("Error calling DescribePagesResources:", err);
         res.status(500).json({ error: err.message });
@@ -297,91 +297,90 @@ app.get('/pages/build-count', async (req, res) => {
 
 app.get('/pages/cloud-function-requests', async (req, res) => {
     try {
-        const { secretId, secretKey } = getKeys(req.query.accountId);
-        
-        if (!secretId || !secretKey) {
-            return res.status(500).json({ error: "Missing credentials" });
-        }
+        const results = await executeOnAccount(req.query.accountId, async (secretId, secretKey) => {
+            const commonClientConfig = {
+                credential: { secretId, secretKey },
+                region: "ap-guangzhou",
+                profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
+            };
 
-        const commonClientConfig = {
-            credential: {
-                secretId: secretId,
-                secretKey: secretKey,
-            },
-            region: "ap-guangzhou",
-            profile: {
-                httpProfile: {
-                    endpoint: "teo.tencentcloudapi.com",
-                },
-            },
-        };
+            const client = new CommonClient("teo.tencentcloudapi.com", "2022-09-01", commonClientConfig);
+            
+            let targetZoneId = req.query.zoneId;
+            const { startTime, endTime } = req.query;
 
-        const client = new CommonClient(
-            "teo.tencentcloudapi.com",
-            "2022-09-01",
-            commonClientConfig
-        );
-
-        // 1. Find ZoneId
-        let targetZoneId = req.query.zoneId;
-        const { startTime, endTime } = req.query;
-
-        if (!targetZoneId) {
-             try {
-                const TeoClient = teo.v20220901.Client;
-                const teoClient = new TeoClient({
-                    credential: { secretId, secretKey },
-                    region: "ap-guangzhou",
-                    profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
-                });
-                
-                const zonesData = await teoClient.DescribeZones({});
-                if (zonesData && zonesData.Zones) {
-                    const pagesZone = zonesData.Zones.find(z => z.ZoneName === 'default-pages-zone');
-                    if (pagesZone) {
-                        targetZoneId = pagesZone.ZoneId;
-                        console.log(`Found default-pages-zone: ${targetZoneId}`);
-                    } else if (zonesData.Zones.length > 0) {
-                        targetZoneId = zonesData.Zones[0].ZoneId;
-                        console.log(`default-pages-zone not found, using first zone: ${targetZoneId}`);
+            // 1. Auto-discover Zone
+            if (!targetZoneId) {
+                try {
+                    const TeoClient = teo.v20220901.Client;
+                    const teoClient = new TeoClient({
+                        credential: { secretId, secretKey },
+                        region: "ap-guangzhou",
+                        profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
+                    });
+                    
+                    const zonesData = await teoClient.DescribeZones({});
+                    if (zonesData && zonesData.Zones) {
+                        const pagesZone = zonesData.Zones.find(z => z.ZoneName === 'default-pages-zone');
+                        if (pagesZone) targetZoneId = pagesZone.ZoneId;
+                        else if (zonesData.Zones.length > 0) targetZoneId = zonesData.Zones[0].ZoneId;
                     }
-                }
-             } catch (zErr) {
-                 console.error("Error fetching zones for Pages:", zErr);
-             }
-        }
-
-        if (!targetZoneId) {
-            return res.status(400).json({ error: "Missing ZoneId and could not auto-discover one." });
-        }
-
-        const payload = {
-            ZoneId: targetZoneId,
-            Interval: "hour"
-        };
-        
-        if (startTime) payload.StartTime = startTime;
-        if (endTime) payload.EndTime = endTime;
-
-        const params = {
-            "ZoneId": targetZoneId,
-            "Interface": "pages:DescribePagesFunctionsRequestDataByZone",
-            "Payload": JSON.stringify(payload)
-        };
-        
-        console.log("Calling DescribePagesResources (CloudFunction) with params:", JSON.stringify(params));
-        const data = await client.request("DescribePagesResources", params);
-        
-        // Parse Result string if present
-        if (data && data.Result) {
-            try {
-                data.parsedResult = JSON.parse(data.Result);
-            } catch (e) {
-                console.error("Error parsing Result JSON:", e);
+                } catch (zErr) { console.error("Error fetching zones for Pages:", zErr); }
             }
-        }
+
+            if (!targetZoneId) return null;
+
+            const payload = { ZoneId: targetZoneId, Interval: "hour" };
+            if (startTime) payload.StartTime = startTime;
+            if (endTime) payload.EndTime = endTime;
+
+            const params = { "ZoneId": targetZoneId, "Interface": "pages:DescribePagesFunctionsRequestDataByZone", "Payload": JSON.stringify(payload) };
+            const data = await client.request("DescribePagesResources", params);
+            if (data && data.Result) {
+                try { data.parsedResult = JSON.parse(data.Result); } catch (e) {}
+            }
+            return data;
+        });
+
+        // Merge Function Requests
+        // Structure: parsedResult: { Status, Granularity, Timestamps, Values, TotalValue }
+        let mergedTimestamps = [];
+        let mergedValues = []; // Should be summed by timestamp
+        let mergedTotal = 0;
         
-        res.json(data);
+        // We assume all requests return same timestamps if same time range.
+        const valueMap = new Map();
+
+        results.forEach(res => {
+            if (res && res.parsedResult) {
+                const { Timestamps, Values, TotalValue } = res.parsedResult;
+                mergedTotal += (TotalValue || 0);
+                
+                if (Timestamps && Values) {
+                    Timestamps.forEach((ts, idx) => {
+                        if (!valueMap.has(ts)) {
+                            valueMap.set(ts, 0);
+                        }
+                        valueMap.set(ts, valueMap.get(ts) + (Values[idx] || 0));
+                    });
+                }
+            }
+        });
+
+        const sortedTs = Array.from(valueMap.keys()).sort((a,b) => a - b);
+        mergedTimestamps = sortedTs;
+        mergedValues = sortedTs.map(ts => valueMap.get(ts));
+
+        res.json({
+            parsedResult: {
+                Status: 'success',
+                Granularity: 'hour',
+                Timestamps: mergedTimestamps,
+                Values: mergedValues,
+                TotalValue: mergedTotal
+            }
+        });
+
     } catch (err) {
         console.error("Error calling DescribePagesResources for CloudFunction:", err);
         res.status(500).json({ error: err.message });
@@ -390,86 +389,55 @@ app.get('/pages/cloud-function-requests', async (req, res) => {
 
 app.get('/pages/cloud-function-monthly-stats', async (req, res) => {
     try {
-        const { secretId, secretKey } = getKeys(req.query.accountId);
-        
-        if (!secretId || !secretKey) {
-            return res.status(500).json({ error: "Missing credentials" });
-        }
+        const results = await executeOnAccount(req.query.accountId, async (secretId, secretKey) => {
+            const commonClientConfig = {
+                credential: { secretId, secretKey },
+                region: "ap-guangzhou",
+                profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
+            };
 
-        const commonClientConfig = {
-            credential: {
-                secretId: secretId,
-                secretKey: secretKey,
-            },
-            region: "ap-guangzhou",
-            profile: {
-                httpProfile: {
-                    endpoint: "teo.tencentcloudapi.com",
-                },
-            },
-        };
+            const client = new CommonClient("teo.tencentcloudapi.com", "2022-09-01", commonClientConfig);
+            let targetZoneId = req.query.zoneId;
 
-        const client = new CommonClient(
-            "teo.tencentcloudapi.com",
-            "2022-09-01",
-            commonClientConfig
-        );
-
-        // 1. Find ZoneId
-        let targetZoneId = req.query.zoneId;
-
-        if (!targetZoneId) {
-             try {
-                const TeoClient = teo.v20220901.Client;
-                const teoClient = new TeoClient({
-                    credential: { secretId, secretKey },
-                    region: "ap-guangzhou",
-                    profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
-                });
-                
-                const zonesData = await teoClient.DescribeZones({});
-                if (zonesData && zonesData.Zones) {
-                    const pagesZone = zonesData.Zones.find(z => z.ZoneName === 'default-pages-zone');
-                    if (pagesZone) {
-                        targetZoneId = pagesZone.ZoneId;
-                        console.log(`Found default-pages-zone: ${targetZoneId}`);
-                    } else if (zonesData.Zones.length > 0) {
-                        targetZoneId = zonesData.Zones[0].ZoneId;
-                        console.log(`default-pages-zone not found, using first zone: ${targetZoneId}`);
+            if (!targetZoneId) {
+                try {
+                    const TeoClient = teo.v20220901.Client;
+                    const teoClient = new TeoClient({
+                        credential: { secretId, secretKey },
+                        region: "ap-guangzhou",
+                        profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
+                    });
+                    const zonesData = await teoClient.DescribeZones({});
+                    if (zonesData && zonesData.Zones) {
+                        const pagesZone = zonesData.Zones.find(z => z.ZoneName === 'default-pages-zone');
+                        if (pagesZone) targetZoneId = pagesZone.ZoneId;
+                        else if (zonesData.Zones.length > 0) targetZoneId = zonesData.Zones[0].ZoneId;
                     }
-                }
-             } catch (zErr) {
-                 console.error("Error fetching zones for Pages:", zErr);
-             }
-        }
-
-        if (!targetZoneId) {
-            return res.status(400).json({ error: "Missing ZoneId and could not auto-discover one." });
-        }
-
-        const payload = {
-            ZoneId: targetZoneId,
-        };
-
-        const params = {
-            "ZoneId": targetZoneId,
-            "Interface": "pages:DescribeHistoryCloudFunctionStats",
-            "Payload": JSON.stringify(payload)
-        };
-        
-        console.log("Calling DescribePagesResources (CloudFunction Monthly) with params:", JSON.stringify(params));
-        const data = await client.request("DescribePagesResources", params);
-        
-        // Parse Result string if present
-        if (data && data.Result) {
-            try {
-                data.parsedResult = JSON.parse(data.Result);
-            } catch (e) {
-                console.error("Error parsing Result JSON:", e);
+                } catch (zErr) { console.error("Error fetching zones for Pages:", zErr); }
             }
-        }
-        
-        res.json(data);
+
+            if (!targetZoneId) return null;
+
+            const params = { "ZoneId": targetZoneId, "Interface": "pages:DescribeHistoryCloudFunctionStats", "Payload": JSON.stringify({ ZoneId: targetZoneId }) };
+            const data = await client.request("DescribePagesResources", params);
+            if (data && data.Result) {
+                try { data.parsedResult = JSON.parse(data.Result); } catch (e) {}
+            }
+            return data;
+        });
+
+        // Merge Monthly Stats
+        let totalMem = 0;
+        let totalInv = 0;
+
+        results.forEach(res => {
+            if (res && res.parsedResult) {
+                totalMem += (res.parsedResult.TotalMemDuration || 0);
+                totalInv += (res.parsedResult.TotalInvocation || 0);
+            }
+        });
+
+        res.json({ parsedResult: { TotalMemDuration: totalMem, TotalInvocation: totalInv } });
     } catch (err) {
         console.error("Error calling DescribePagesResources for CloudFunction Monthly:", err);
         res.status(500).json({ error: err.message });
@@ -478,158 +446,278 @@ app.get('/pages/cloud-function-monthly-stats', async (req, res) => {
 
 app.get('/traffic', async (req, res) => {
     try {
-        const { secretId, secretKey } = getKeys(req.query.accountId);
-        
-        if (!secretId || !secretKey) {
-            return res.status(500).json({ error: "Missing credentials" });
-        }
-
-        const TeoClient = teo.v20220901.Client;
-        const clientConfig = {
-            credential: {
-                secretId: secretId,
-                secretKey: secretKey,
-            },
-            region: "ap-guangzhou",
-            profile: {
-                httpProfile: {
-                    endpoint: "teo.tencentcloudapi.com",
-                },
-            },
-        };
-
-        const client = new TeoClient(clientConfig);
-        
-        const now = new Date();
-        const formatDate = (date) => {
-             return date.toISOString().slice(0, 19) + 'Z';
-        };
-
-        const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
         const metric = req.query.metric || "l7Flow_flux";
+        const now = new Date();
+        const formatDate = (date) => date.toISOString().slice(0, 19) + 'Z';
+        const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        
         const startTime = req.query.startTime || formatDate(yesterday);
         const endTime = req.query.endTime || formatDate(now);
         const interval = req.query.interval;
         const zoneId = req.query.zoneId;
         const zoneIds = zoneId ? [ zoneId ] : [ "*" ];
 
-        let params = {};
-        let data;
+        console.log(`Requesting metric: ${metric}, StartTime: ${startTime}, EndTime: ${endTime}, Interval: ${interval}, AccountId: ${req.query.accountId}`);
 
-        console.log(`Requesting metric: ${metric}, StartTime: ${startTime}, EndTime: ${endTime}, Interval: ${interval}`);
-
-        if (TOP_ANALYSIS_METRICS.includes(metric)) {
-            // API: DescribeTopL7AnalysisData
-            params = {
-                "StartTime": startTime,
-                "EndTime": endTime,
-                "MetricName": metric,
-                "ZoneIds": zoneIds
-            };
-            console.log("Calling DescribeTopL7AnalysisData with params:", JSON.stringify(params, null, 2));
-            data = await client.DescribeTopL7AnalysisData(params);
-        } else if (SECURITY_METRICS.includes(metric)) {
-            // API: DescribeWebProtectionData (DDoS) using CommonClient
-            params = {
-                "StartTime": startTime,
-                "EndTime": endTime,
-                "MetricNames": [ metric ],
-                "ZoneIds": zoneIds
-            };
-
-            if (interval && interval !== 'auto') {
-                params["Interval"] = interval;
-            }
-            
-            // CommonClient setup
-            const commonClientConfig = {
-                credential: {
-                    secretId: secretId,
-                    secretKey: secretKey,
-                },
+        const results = await executeOnAccount(req.query.accountId, async (secretId, secretKey) => {
+            const TeoClient = teo.v20220901.Client;
+            const client = new TeoClient({
+                credential: { secretId, secretKey },
                 region: "ap-guangzhou",
-                profile: {
-                    httpProfile: {
-                        endpoint: "teo.tencentcloudapi.com",
-                    },
-                },
-            };
+                profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
+            });
 
             const commonClient = new CommonClient(
                 "teo.tencentcloudapi.com",
                 "2022-09-01",
-                commonClientConfig
+                {
+                    credential: { secretId, secretKey },
+                    region: "ap-guangzhou",
+                    profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
+                }
             );
 
-            console.log("Calling DescribeWebProtectionData with params:", JSON.stringify(params, null, 2));
-            data = await commonClient.request("DescribeWebProtectionData", params);
+            let params = {};
             
-        } else if (FUNCTION_METRICS.includes(metric)) {
-            // API: DescribeTimingFunctionAnalysisData (Edge Functions)
-            let metricNames = [metric];
-            if (metric === 'function_cpuCostTime') {
-                metricNames = ["function_requestCount", "function_cpuCostTime"];
-            }
-
-            params = {
-                "StartTime": startTime,
-                "EndTime": endTime,
-                "MetricNames": metricNames,
-                "ZoneIds": zoneIds
-            };
-
-            if (interval && interval !== 'auto') {
-                params["Interval"] = interval;
-            }
-
-            console.log("Calling DescribeTimingFunctionAnalysisData with params:", JSON.stringify(params, null, 2));
-            
-            // Use CommonClient for DescribeTimingFunctionAnalysisData
-            const commonClientConfig = {
-                credential: {
-                    secretId: secretId,
-                    secretKey: secretKey,
-                },
-                region: "ap-guangzhou",
-                profile: {
-                    httpProfile: {
-                        endpoint: "teo.tencentcloudapi.com",
-                    },
-                },
-            };
-
-            const commonClient = new CommonClient(
-                "teo.tencentcloudapi.com",
-                "2022-09-01",
-                commonClientConfig
-            );
-
-            data = await commonClient.request("DescribeTimingFunctionAnalysisData", params);
-
-        } else {
-            // API: DescribeTimingL7AnalysisData OR DescribeTimingL7OriginPullData
-            params = {
-                "StartTime": startTime,
-                "EndTime": endTime,
-                "MetricNames": [ metric ],
-                "ZoneIds": zoneIds
-            };
-
-            if (interval && interval !== 'auto') {
-                params["Interval"] = interval;
-            }
-            
-            console.log("Calling Timing API with params:", JSON.stringify(params, null, 2));
-            
-            if (ORIGIN_PULL_METRICS.includes(metric)) {
-                data = await client.DescribeTimingL7OriginPullData(params);
+            if (TOP_ANALYSIS_METRICS.includes(metric)) {
+                params = { "StartTime": startTime, "EndTime": endTime, "MetricName": metric, "ZoneIds": zoneIds };
+                return await client.DescribeTopL7AnalysisData(params);
+            } else if (SECURITY_METRICS.includes(metric)) {
+                params = { "StartTime": startTime, "EndTime": endTime, "MetricNames": [ metric ], "ZoneIds": zoneIds };
+                if (interval && interval !== 'auto') params["Interval"] = interval;
+                return await commonClient.request("DescribeWebProtectionData", params);
+            } else if (FUNCTION_METRICS.includes(metric)) {
+                let metricNames = [metric];
+                if (metric === 'function_cpuCostTime') metricNames = ["function_requestCount", "function_cpuCostTime"];
+                params = { "StartTime": startTime, "EndTime": endTime, "MetricNames": metricNames, "ZoneIds": zoneIds };
+                if (interval && interval !== 'auto') params["Interval"] = interval;
+                return await commonClient.request("DescribeTimingFunctionAnalysisData", params);
             } else {
-                data = await client.DescribeTimingL7AnalysisData(params);
+                params = { "StartTime": startTime, "EndTime": endTime, "MetricNames": [ metric ], "ZoneIds": zoneIds };
+                if (interval && interval !== 'auto') params["Interval"] = interval;
+                if (ORIGIN_PULL_METRICS.includes(metric)) return await client.DescribeTimingL7OriginPullData(params);
+                return await client.DescribeTimingL7AnalysisData(params);
+            }
+        });
+
+        // Merging Logic
+        let mergedData = { Data: [], TimingDataRecords: [], Interval: interval }; // Basic structure
+        
+        // Helper to merge time series
+        const mergeTimeSeries = (targetList, sourceList) => {
+            // Assume sourceList is sorted by timestamp. 
+            // Since we query same time range, timestamps should match.
+            // We use a map to sum values by timestamp.
+            const map = new Map();
+            
+            // Fill map with existing target data
+            targetList.forEach(item => {
+                map.set(item.Timestamp, { ...item }); // Clone
+            });
+
+            sourceList.forEach(item => {
+                if (map.has(item.Timestamp)) {
+                    const existing = map.get(item.Timestamp);
+                    if (existing.Value !== undefined) existing.Value += (item.Value || 0);
+                    // For nested structures like Values in DescribeWebProtectionData
+                    // Or Detail in TypeValue
+                } else {
+                    map.set(item.Timestamp, { ...item });
+                }
+            });
+            
+            return Array.from(map.values()).sort((a, b) => a.Timestamp - b.Timestamp);
+        };
+
+        // Helper to merge Detail arrays (Top Data)
+        const mergeDetails = (targetDetails, sourceDetails) => {
+            const map = new Map();
+            targetDetails.forEach(d => map.set(d.Name, { ...d }));
+            
+            sourceDetails.forEach(d => {
+                if (map.has(d.Name)) {
+                    map.get(d.Name).Value += d.Value;
+                } else {
+                    map.set(d.Name, { ...d });
+                }
+            });
+            
+            // Re-sort desc
+            return Array.from(map.values()).sort((a, b) => b.Value - a.Value);
+        };
+
+        if (results.length > 0) {
+            // Clone first result structure as base
+            const first = results[0];
+            
+            // Handle Parse for CommonClient requests which return Result string
+             const parseResultIfNeeded = (resObj) => {
+                 if (resObj && resObj.Result && typeof resObj.Result === 'string') {
+                     try { return JSON.parse(resObj.Result); } catch(e) {}
+                 }
+                 return resObj;
+             };
+
+            if (TOP_ANALYSIS_METRICS.includes(metric)) {
+                // Top Analysis: Data[0].DetailData
+                let mergedDetail = [];
+                results.forEach(res => {
+                    if (res && res.Data && res.Data[0] && res.Data[0].DetailData) {
+                        mergedDetail = mergeDetails(mergedDetail, res.Data[0].DetailData);
+                    }
+                });
+                mergedData = { Data: [{ MetricName: metric, DetailData: mergedDetail }] };
+                
+            } else {
+                // Time Series (General)
+                // Need to handle different structures:
+                // 1. Data[].TypeValue[].Detail (TimingL7Analysis)
+                // 2. TimingDataRecords[].TypeValue[].Detail (TimingL7OriginPull)
+                // 3. Data[].Value (WebProtection - CommonClient) -> needs Result parsing usually? 
+                //    Wait, CommonClient.request returns object with "Result" if it's raw, but here we might get parsed object depending on SDK version?
+                //    Actually, DescribeWebProtectionData returns a structure like { Data: [...] } where Data has MetricName and Value (array of {Timestamp, Value})
+                
+                // Let's implement a generic merger based on what we find in the first result
+                
+                // Strategy: Just loop and sum up everything that looks like a number in the deep structure? 
+                // Too risky. Let's be specific.
+                
+                // Case A: TimingL7AnalysisData (Data -> TypeValue -> Detail)
+                if (first.Data && first.Data[0] && first.Data[0].TypeValue) {
+                     // We need to merge Detail arrays for each MetricName
+                     // But usually we request only 1 metric.
+                     const metricName = first.Data[0].TypeValue[0].MetricName;
+                     
+                     // We will reconstruct the Detail array
+                     const timestampMap = new Map();
+                     
+                     results.forEach(res => {
+                         if (res.Data && res.Data[0] && res.Data[0].TypeValue) {
+                             const typeVal = res.Data[0].TypeValue.find(t => t.MetricName === metricName);
+                             if (typeVal && typeVal.Detail) {
+                                 typeVal.Detail.forEach(d => {
+                                     if (!timestampMap.has(d.Timestamp)) {
+                                         timestampMap.set(d.Timestamp, { Timestamp: d.Timestamp, Value: 0 });
+                                     }
+                                     timestampMap.get(d.Timestamp).Value += d.Value;
+                                 });
+                             }
+                         }
+                     });
+                     
+                     const mergedDetail = Array.from(timestampMap.values()).sort((a,b) => a.Timestamp - b.Timestamp);
+                     
+                     // Calculate Sum, Max, Avg
+                     let sum = 0, max = 0;
+                     mergedDetail.forEach(d => {
+                         sum += d.Value;
+                         if (d.Value > max) max = d.Value;
+                     });
+                     const avg = mergedDetail.length > 0 ? sum / mergedDetail.length : 0;
+                     
+                     mergedData = {
+                         Data: [{
+                             TypeValue: [{
+                                 MetricName: metricName,
+                                 Detail: mergedDetail,
+                                 Sum: sum,
+                                 Max: max,
+                                 Avg: avg
+                             }]
+                         }],
+                         Interval: interval
+                     };
+                }
+                // Case B: TimingL7OriginPullData (TimingDataRecords -> TypeValue -> Detail)
+                else if (first.TimingDataRecords && first.TimingDataRecords[0] && first.TimingDataRecords[0].TypeValue) {
+                    // Same logic as Case A but different root
+                     const metricName = first.TimingDataRecords[0].TypeValue[0].MetricName;
+                     const timestampMap = new Map();
+                     
+                     results.forEach(res => {
+                         if (res.TimingDataRecords && res.TimingDataRecords[0] && res.TimingDataRecords[0].TypeValue) {
+                             const typeVal = res.TimingDataRecords[0].TypeValue.find(t => t.MetricName === metricName);
+                             if (typeVal && typeVal.Detail) {
+                                 typeVal.Detail.forEach(d => {
+                                     if (!timestampMap.has(d.Timestamp)) {
+                                         timestampMap.set(d.Timestamp, { Timestamp: d.Timestamp, Value: 0 });
+                                     }
+                                     timestampMap.get(d.Timestamp).Value += d.Value;
+                                 });
+                             }
+                         }
+                     });
+                     
+                     const mergedDetail = Array.from(timestampMap.values()).sort((a,b) => a.Timestamp - b.Timestamp);
+                     
+                     let sum = 0, max = 0;
+                     mergedDetail.forEach(d => sum += d.Value); // OriginPull doesn't always return Sum/Max in root, but let's compute
+                     mergedDetail.forEach(d => { if(d.Value > max) max = d.Value; });
+                     const avg = mergedDetail.length > 0 ? sum / mergedDetail.length : 0;
+
+                     mergedData = {
+                         TimingDataRecords: [{
+                             TypeValue: [{
+                                 MetricName: metricName,
+                                 Detail: mergedDetail,
+                                 Sum: sum,
+                                 Max: max,
+                                 Avg: avg
+                             }]
+                         }],
+                         Interval: interval
+                     };
+                }
+                // Case C: WebProtectionData / FunctionData (Data -> Value (Array of {Timestamp, Value}))
+                // Note: DescribeWebProtectionData returns Data list where each item has MetricName and Value (Array)
+                else if (first.Data && first.Data[0] && first.Data[0].Value) {
+                    // Assuming structure: Data: [ { MetricName: '...', Value: [ {Timestamp, Value}, ... ] } ]
+                    // We need to handle multiple metrics if requested (e.g. function cpu/req)
+                    
+                    let mergedDataList = [];
+                    
+                    // Initialize mergedDataList with metrics from first result
+                    first.Data.forEach(m => {
+                        mergedDataList.push({
+                            MetricName: m.MetricName,
+                            ValueMap: new Map() // Temp map for summing
+                        });
+                    });
+                    
+                    results.forEach(res => {
+                        const parsed = parseResultIfNeeded(res);
+                        if (parsed && parsed.Data) {
+                            parsed.Data.forEach(m => {
+                                const target = mergedDataList.find(t => t.MetricName === m.MetricName);
+                                if (target && m.Value) {
+                                    m.Value.forEach(v => {
+                                        if (!target.ValueMap.has(v.Timestamp)) {
+                                            target.ValueMap.set(v.Timestamp, { Timestamp: v.Timestamp, Value: 0 });
+                                        }
+                                        target.ValueMap.get(v.Timestamp).Value += v.Value;
+                                    });
+                                }
+                            });
+                        }
+                    });
+                    
+                    // Finalize structure
+                    mergedData = {
+                        Data: mergedDataList.map(m => ({
+                            MetricName: m.MetricName,
+                            Value: Array.from(m.ValueMap.values()).sort((a,b) => a.Timestamp - b.Timestamp)
+                        })),
+                        Interval: interval
+                    };
+                }
+                // Fallback: just return first
+                else {
+                    mergedData = first;
+                }
             }
         }
-        
-        res.json(data);
+
+        res.json(mergedData);
     } catch (err) {
         console.error("Error calling Tencent Cloud API:", err);
         res.status(500).json({ error: err.message });

@@ -1432,6 +1432,15 @@
                 
                 if (accounts && accounts.length > 0) {
                     select.innerHTML = '';
+                    
+                    // Add "Overview" option if there are multiple accounts
+                    if (accounts.length > 1) {
+                        const allOption = document.createElement('option');
+                        allOption.value = 'all';
+                        allOption.text = '总览 (所有账号)';
+                        select.appendChild(allOption);
+                    }
+
                     accounts.forEach(account => {
                         const option = document.createElement('option');
                         option.value = account.id;
@@ -1439,9 +1448,9 @@
                         select.appendChild(option);
                     });
                     
-                    // Select first one by default if not set
-                    if (!select.value && accounts.length > 0) {
-                        select.value = accounts[0].id;
+                    // Select "Overview" by default if multiple accounts, else the single account
+                    if (!select.value) {
+                        select.value = accounts.length > 1 ? 'all' : accounts[0].id;
                     }
                     
                     container.classList.remove('hidden');
