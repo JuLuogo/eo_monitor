@@ -214,21 +214,68 @@ app.get('/zones', async (req, res) => {
             return await client.DescribeZones({});
         });
 
-        // Merge zones
+        // Merge zones and attach accountId source if possible
+        // Note: executeOnAccount returns array of results. 
+        // We need to know which account each result came from to tag the zones.
+        // But executeOnAccount currently abstracts that away.
+        
+        // Let's refactor this part slightly to tag zones.
+        // Since we can't easily change executeOnAccount return type without breaking others,
+        // we can do a mapping here if we knew the accounts order, but executeOnAccount filters nulls.
+        
+        // Alternative: modifying executeOnAccount is risky.
+        // Let's just inline the logic for /zones to handle tagging or modify executeOnAccount to return { result, accountId }
+        
+        // Actually, let's just use getAccounts() locally if accountId is 'all'
         let mergedZones = [];
         let totalCount = 0;
-        
-        results.forEach(data => {
-            if (data && data.Zones) {
-                mergedZones = mergedZones.concat(data.Zones);
-                totalCount += data.TotalCount || 0;
-            }
-        });
+        const requestId = results[0]?.RequestId || 'merged-request';
+
+        if (req.query.accountId === 'all') {
+            const accounts = getAccounts();
+            // We need to re-run this specifically to tag zones, or we can assume the results map to accounts?
+            // No, executeOnAccount filters nulls, so indices might not match.
+            
+            // Let's re-implement specific parallel logic for /zones to ensure tagging
+            const zonePromises = accounts.map(async (acc) => {
+                try {
+                    const TeoClient = teo.v20220901.Client;
+                    const client = new TeoClient({
+                        credential: { secretId: acc.secretId, secretKey: acc.secretKey },
+                        region: "ap-guangzhou",
+                        profile: { httpProfile: { endpoint: "teo.tencentcloudapi.com" } }
+                    });
+                    const data = await client.DescribeZones({});
+                    if (data && data.Zones) {
+                        // Tag zones with accountId
+                        return data.Zones.map(z => ({ ...z, _accountId: acc.id }));
+                    }
+                } catch (err) {
+                    console.error(`Error fetching zones for account ${acc.id}:`, err);
+                }
+                return [];
+            });
+            
+            const zonesArrays = await Promise.all(zonePromises);
+            mergedZones = zonesArrays.flat();
+            totalCount = mergedZones.length;
+
+        } else {
+            // Single account case
+            results.forEach(data => {
+                if (data && data.Zones) {
+                    // Tag with the requested accountId
+                    const tagged = data.Zones.map(z => ({ ...z, _accountId: req.query.accountId }));
+                    mergedZones = mergedZones.concat(tagged);
+                    totalCount += data.TotalCount || 0;
+                }
+            });
+        }
 
         res.json({
             TotalCount: totalCount,
             Zones: mergedZones,
-            RequestId: results[0]?.RequestId || 'merged-request'
+            RequestId: requestId
         });
     } catch (err) {
         console.error("Error calling DescribeZones:", err);

@@ -1207,9 +1207,15 @@
                 }
 
                 const interval = document.getElementById('interval').value;
-                const zoneId = document.getElementById('zoneId').value.trim();
-                const accountId = document.getElementById('accountSelect').value;
+                const zoneSelect = document.getElementById('zoneId');
+                const zoneId = zoneSelect.value.trim();
+                let accountId = document.getElementById('accountSelect').value;
                 
+                // Override accountId if the selected zone belongs to a specific account
+                if (zoneId !== '*' && zoneSelect.options[zoneSelect.selectedIndex].dataset.accountId) {
+                    accountId = zoneSelect.options[zoneSelect.selectedIndex].dataset.accountId;
+                }
+
                 let url = `/api/traffic?metric=${metric}&startTime=${encodeURIComponent(startTime)}&endTime=${encodeURIComponent(endTime)}`;
                 if (accountId) url += `&accountId=${encodeURIComponent(accountId)}`;
 
@@ -1396,10 +1402,18 @@
                     result.Zones.forEach(zone => {
                         const option = document.createElement('option');
                         option.value = zone.ZoneId;
+                        // Store the accountId this zone belongs to (if available)
+                        if (zone._accountId) {
+                            option.dataset.accountId = zone._accountId;
+                        }
+
                         let text = zone.ZoneName;
                         if (text === 'default-pages-zone') {
                             text += ' (Pages站点)';
                         }
+                        // Optionally show account name in dropdown if overview mode
+                        // if (zone._accountId) { text += ` [${zone._accountId}]`; } 
+                        
                         option.text = text;
                         select.appendChild(option);
                     });
@@ -1530,7 +1544,12 @@
                 // Get ZoneId if selected
                 const zoneIdElement = document.getElementById('zoneId');
                 const zoneId = zoneIdElement ? zoneIdElement.value : null;
-                const accountId = document.getElementById('accountSelect').value;
+                let accountId = document.getElementById('accountSelect').value;
+                
+                // Override accountId if zone is specific
+                if (zoneId && zoneId !== '*' && zoneIdElement.options[zoneIdElement.selectedIndex].dataset.accountId) {
+                    accountId = zoneIdElement.options[zoneIdElement.selectedIndex].dataset.accountId;
+                }
                 
                 let url = '/api/pages/build-count?';
                 const params = [];
@@ -1564,7 +1583,12 @@
                 // Get ZoneId if selected
                 const zoneIdElement = document.getElementById('zoneId');
                 const zoneId = zoneIdElement ? zoneIdElement.value : null;
-                const accountId = document.getElementById('accountSelect').value;
+                let accountId = document.getElementById('accountSelect').value;
+                
+                // Override accountId if zone is specific
+                if (zoneId && zoneId !== '*' && zoneIdElement.options[zoneIdElement.selectedIndex].dataset.accountId) {
+                    accountId = zoneIdElement.options[zoneIdElement.selectedIndex].dataset.accountId;
+                }
                 
                 let url = '/api/pages/cloud-function-requests';
                 const params = [];
@@ -1654,7 +1678,12 @@
                 // Get ZoneId if selected
                 const zoneIdElement = document.getElementById('zoneId');
                 const zoneId = zoneIdElement ? zoneIdElement.value : null;
-                const accountId = document.getElementById('accountSelect').value;
+                let accountId = document.getElementById('accountSelect').value;
+                
+                // Override accountId if zone is specific
+                if (zoneId && zoneId !== '*' && zoneIdElement.options[zoneIdElement.selectedIndex].dataset.accountId) {
+                    accountId = zoneIdElement.options[zoneIdElement.selectedIndex].dataset.accountId;
+                }
                 
                 let url = '/api/pages/cloud-function-monthly-stats?';
                 const params = [];
